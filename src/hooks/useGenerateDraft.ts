@@ -3,6 +3,7 @@ import { useAccount, usePublicClient } from "wagmi";
 import { encodeFunctionData, parseEther } from "viem";
 import { encodeLLMRequest, decodeLLMResult } from "@/lib/llm";
 import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
+import { rawGetTransactionReceipt } from "@/lib/rpc";
 
 interface GenerateState {
   status: "idle" | "submitting" | "pending" | "polling" | "success" | "error";
@@ -59,13 +60,8 @@ export function useGenerateDraft() {
           return;
         }
 
-        // Get fresh nonce from the chain
-        const nonce = await publicClient!.getTransactionCount({
-          address,
-          blockTag: "pending",
-        });
-
         // Send via MetaMask directly (bypasses wagmi nonce management)
+        // Don't set nonce — let MetaMask handle it to avoid "already known" conflicts
         const hash = await ethereum.request({
           method: "eth_sendTransaction",
           params: [
@@ -75,7 +71,6 @@ export function useGenerateDraft() {
               data: data,
               value: "0x" + parseEther("0.01").toString(16), // 0.01 RITUAL for auto-deposit
               gas: "0x4C4B40", // 5,000,000
-              nonce: "0x" + nonce.toString(16),
             },
           ],
         });
@@ -95,14 +90,10 @@ export function useGenerateDraft() {
           return;
         }
 
-        // Get RAW receipt via eth_getTransactionReceipt to preserve Ritual-specific spcCalls field
-        // viem's getTransactionReceipt strips non-standard fields
-        const rawReceipt = await publicClient!.request({
-          method: "eth_getTransactionReceipt" as any,
-          params: [hash],
-        } as any);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const spcCalls = (rawReceipt as any)?.spcCalls;
+        // Get RAW receipt via direct RPC call to preserve Ritual-specific spcCalls field
+        // viem's getTransactionReceipt and publicClient.request both strip non-standard fields
+        const rawReceipt = await rawGetTransactionReceipt(hash);
+        const spcCalls = rawReceipt?.spcCalls;
 
         if (spcCalls && spcCalls.length > 0) {
           const output = spcCalls[0].output;
@@ -174,13 +165,8 @@ export function useGenerateDraft() {
 
         try {
           // Use raw RPC to preserve Ritual-specific spcCalls field
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const rawReceipt = await publicClient!.request({
-            method: "eth_getTransactionReceipt" as any,
-            params: [hash],
-          } as any);
-
-          const spcCalls = (rawReceipt as any)?.spcCalls;
+          const rawReceipt = await rawGetTransactionReceipt(hash);
+          const spcCalls = rawReceipt?.spcCalls;
 
           if (spcCalls && spcCalls.length > 0) {
             const output = spcCalls[0].output;
