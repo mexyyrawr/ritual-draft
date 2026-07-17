@@ -31,7 +31,7 @@ export function useRitualWallet() {
   });
 
   const deposit = useCallback(
-    async (amount: string = "0.1") => {
+    async (amount: string = "0.5") => {
       const data = encodeFunctionData({
         abi: RITUAL_WALLET_ABI,
         functionName: "deposit",

@@ -103,11 +103,11 @@ export function DraftChat() {
             ⚠️ Deposit RITUAL ke RitualWallet dulu buat generate drafts.
           </p>
           <button
-            onClick={() => deposit("0.1")}
+            onClick={() => deposit("0.5")}
             disabled={isDepositing}
             className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded text-sm text-white disabled:opacity-50 transition-colors"
           >
-            {isDepositing ? "Depositing..." : "Deposit 0.1 RITUAL"}
+            {isDepositing ? "Depositing..." : "Deposit 0.5 RITUAL"}
           </button>
         </div>
       )}
@@ -282,11 +282,11 @@ export function DraftChat() {
           <p className="text-red-400 text-sm">❌ {error}</p>
           {error.includes("RitualWallet") && (
             <button
-              onClick={() => deposit("0.1")}
+              onClick={() => deposit("0.5")}
               disabled={isDepositing}
               className="mt-2 px-4 py-2 bg-yellow-600 rounded text-sm text-white"
             >
-              {isDepositing ? "Depositing..." : "Deposit 0.1 RITUAL"}
+              {isDepositing ? "Depositing..." : "Deposit 0.5 RITUAL"}
             </button>
           )}
         </div>

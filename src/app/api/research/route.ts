@@ -24,6 +24,18 @@ async function fetchRitualDocs(): Promise<Source[]> {
       url: "https://docs.ritualfoundation.org/build/overview",
       name: "Build Overview",
     },
+    {
+      url: "https://docs.ritualfoundation.org/build/precompiles/llm",
+      name: "LLM Precompile Docs",
+    },
+    {
+      url: "https://docs.ritualfoundation.org/build/precompiles/overview",
+      name: "Precompiles Overview",
+    },
+    {
+      url: "https://docs.ritualfoundation.org/build/agents",
+      name: "Agents Documentation",
+    },
   ];
 
   const results: Source[] = [];
@@ -32,6 +44,7 @@ async function fetchRitualDocs(): Promise<Source[]> {
       const res = await fetch(page.url, {
         signal: AbortSignal.timeout(10000),
       });
+      if (!res.ok) continue;
       const html = await res.text();
       const text = html
         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
@@ -40,13 +53,17 @@ async function fetchRitualDocs(): Promise<Source[]> {
         .replace(/\s+/g, " ")
         .trim()
         .slice(0, 3000);
-      results.push({ name: page.name, content: text, url: page.url });
+      if (text.length > 50) {
+        results.push({ name: page.name, content: text, url: page.url });
+      }
     } catch (e) {
       console.error(`Failed to fetch ${page.url}:`, e);
     }
   }
 
-  cachedDocs = { data: results, timestamp: Date.now() };
+  if (results.length > 0) {
+    cachedDocs = { data: results, timestamp: Date.now() };
+  }
   return results;
 }
 
@@ -57,32 +74,26 @@ async function fetchRitualGitHub(): Promise<Source[]> {
 
   try {
     const res = await fetch(
-      "https://api.github.com/repos/ritual-foundation/events?per_page=10",
+      "https://api.github.com/orgs/ritual-foundation/repos?sort=updated&per_page=5",
       {
         headers: { Accept: "application/vnd.github.v3+json" },
         signal: AbortSignal.timeout(10000),
       }
     );
     if (!res.ok) return [];
-    const events = await res.json();
-    const content = (events as Record<string, unknown>[])
-      .filter(
-        (e: Record<string, unknown>) =>
-          e.type === "PushEvent" ||
-          e.type === "CreateEvent" ||
-          e.type === "ReleaseEvent"
+    const repos = await res.json();
+
+    const repoInfo = (repos as Record<string, unknown>[])
+      .map(
+        (r: Record<string, unknown>) =>
+          `${r.name}: ${r.description || "No description"} (stars: ${r.stargazers_count || 0})`
       )
-      .map((e: Record<string, unknown>) => {
-        const payload = e.payload as Record<string, unknown> | undefined;
-        const repo = e.repo as Record<string, unknown> | undefined;
-        return `${e.type}: ${repo?.name || "unknown"} - ${payload?.description || payload?.release || "update"}`;
-      })
       .join("\n");
 
     const result: Source[] = [
       {
-        name: "GitHub Activity",
-        content: content || "No recent activity",
+        name: "Ritual GitHub Repos",
+        content: repoInfo || "No repos found",
         url: "https://github.com/ritual-foundation",
       },
     ];
@@ -114,7 +125,7 @@ async function fetchRitualTweets(): Promise<Source[]> {
     }
 
     const tweets = tweetMatches
-      .slice(0, 5)
+      .slice(0, 10)
       .map((m: string) => m.replace(/<[^>]*>/g, "").trim())
       .filter((t: string) => t.length > 0)
       .join("\n\n");
@@ -139,18 +150,54 @@ async function fetchRitualTweets(): Promise<Source[]> {
   }
 }
 
+// Additional: fetch from Ritual ecosystem/community
+async function fetchRitualEcosystem(): Promise<Source[]> {
+  try {
+    // Fetch from Ritual's official GitHub org for recent activity
+    const res = await fetch(
+      "https://api.github.com/orgs/ritual-foundation/events?per_page=10",
+      {
+        headers: { Accept: "application/vnd.github.v3+json" },
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    if (!res.ok) return [];
+    const events = await res.json();
+
+    const activity = (events as Record<string, unknown>[])
+      .slice(0, 10)
+      .map((e: Record<string, unknown>) => {
+        const repo = e.repo as Record<string, unknown> | undefined;
+        const payload = e.payload as Record<string, unknown> | undefined;
+        return `${e.type}: ${repo?.name || "unknown"} - ${payload?.description || "update"}`;
+      })
+      .join("\n");
+
+    return [
+      {
+        name: "Ritual Recent Activity",
+        content: activity || "No recent activity",
+        url: "https://github.com/ritual-foundation",
+      },
+    ];
+  } catch {
+    return [];
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { query } = await req.json();
 
     // Fetch from all sources in parallel
-    const [docs, github, tweets] = await Promise.all([
+    const [docs, github, tweets, ecosystem] = await Promise.all([
       fetchRitualDocs(),
       fetchRitualGitHub(),
       fetchRitualTweets(),
+      fetchRitualEcosystem(),
     ]);
 
-    const allSources = [...docs, ...github, ...tweets];
+    const allSources = [...docs, ...github, ...tweets, ...ecosystem];
 
     // Build context string for LLM
     const context = allSources
