@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
-import { encodeFunctionData, decodeEventLog } from "viem";
+import { encodeFunctionData, decodeEventLog, parseEther } from "viem";
 import { encodeLLMRequest } from "@/lib/llm";
 import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
 
@@ -55,6 +55,7 @@ export function useGenerateDraft() {
         const hash = await sendTransactionAsync({
           to: RITUAL_DRAFT_CONTRACT,
           data,
+          value: parseEther("0.01"), // auto-deposit to extend RitualWallet lock
           gas: 5_000_000n,
         });
 

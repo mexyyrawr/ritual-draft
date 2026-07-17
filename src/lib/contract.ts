@@ -1,5 +1,5 @@
 export const RITUAL_DRAFT_CONTRACT =
-  "0x4CfF91055e3448B334033B38Cd37C0a16d42a12c" as const;
+  "0xe7550a2F181840e3dc4e8CFD49dbdb41a2151664" as const;
 
 export const RITUAL_DRAFT_ABI = [
   {

@@ -13,7 +13,16 @@ contract RitualDraft is PrecompileConsumer {
     event DraftGenerated(uint256 indexed id, address indexed author, string content);
     event DraftRequested(uint256 indexed id, address indexed author);
 
-    function generateDraft(bytes calldata llmInput) external {
+    /// @notice Generate draft. Send RITUAL with tx to auto-deposit + extend lock.
+    function generateDraft(bytes calldata llmInput) external payable {
+        // Auto-deposit to RitualWallet to extend lock
+        if (msg.value > 0) {
+            (bool ok,) = RITUAL_WALLET.call{value: msg.value}(
+                abi.encodeWithSignature("deposit(uint256)", 100000)
+            );
+            require(ok, "Deposit failed");
+        }
+
         uint256 id = nextDraftId;
         nextDraftId = id + 1;
         draftAuthor[id] = msg.sender;
@@ -46,5 +55,13 @@ contract RitualDraft is PrecompileConsumer {
 
     function getUserDrafts(address user) external view returns (uint256[] memory) {
         return userDrafts[user];
+    }
+
+    /// @notice Auto-deposit when RITUAL is sent to contract
+    receive() external override payable {
+        (bool ok,) = RITUAL_WALLET.call{value: msg.value}(
+            abi.encodeWithSignature("deposit(uint256)", 100000)
+        );
+        require(ok, "Auto-deposit failed");
     }
 }
