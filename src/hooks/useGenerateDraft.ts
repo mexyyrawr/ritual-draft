@@ -82,7 +82,7 @@ export function useGenerateDraft() {
 
         setState({ status: "pending", draft: "", txHash: hash, error: null });
 
-        // Wait for transaction receipt
+        // Wait for transaction receipt (viem for status check)
         const receipt = await publicClient!.waitForTransactionReceipt({ hash });
 
         if (receipt.status === "reverted") {
@@ -95,9 +95,14 @@ export function useGenerateDraft() {
           return;
         }
 
-        // Check spcCalls for async LLM result (Ritual-specific receipt field)
+        // Get RAW receipt via eth_getTransactionReceipt to preserve Ritual-specific spcCalls field
+        // viem's getTransactionReceipt strips non-standard fields
+        const rawReceipt = await publicClient!.request({
+          method: "eth_getTransactionReceipt" as any,
+          params: [hash],
+        } as any);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const spcCalls = (receipt as any).spcCalls;
+        const spcCalls = (rawReceipt as any)?.spcCalls;
 
         if (spcCalls && spcCalls.length > 0) {
           const output = spcCalls[0].output;
@@ -168,11 +173,17 @@ export function useGenerateDraft() {
         await new Promise((r) => setTimeout(r, delay));
 
         try {
+          // Use raw RPC to preserve Ritual-specific spcCalls field
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const receipt = await publicClient!.getTransactionReceipt({ hash }) as any;
+          const rawReceipt = await publicClient!.request({
+            method: "eth_getTransactionReceipt" as any,
+            params: [hash],
+          } as any);
 
-          if (receipt && receipt.spcCalls && receipt.spcCalls.length > 0) {
-            const output = receipt.spcCalls[0].output;
+          const spcCalls = (rawReceipt as any)?.spcCalls;
+
+          if (spcCalls && spcCalls.length > 0) {
+            const output = spcCalls[0].output;
             const result = decodeLLMResult(output);
 
             if (result.hasError) {
