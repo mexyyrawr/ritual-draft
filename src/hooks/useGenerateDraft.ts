@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
+import { useAccount, usePublicClient } from "wagmi";
 import { encodeFunctionData, decodeEventLog, parseEther } from "viem";
 import { encodeLLMRequest } from "@/lib/llm";
 import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
@@ -14,7 +14,6 @@ interface GenerateState {
 export function useGenerateDraft() {
   const { address } = useAccount();
   const publicClient = usePublicClient();
-  const { sendTransactionAsync } = useSendTransaction();
   const [state, setState] = useState<GenerateState>({
     status: "idle",
     draft: "",
@@ -52,24 +51,45 @@ export function useGenerateDraft() {
           args: [llmInput],
         });
 
-        const hash = await sendTransactionAsync({
-          to: RITUAL_DRAFT_CONTRACT,
-          data,
-          value: parseEther("0.01"), // auto-deposit to extend RitualWallet lock
-          gas: 5_000_000n,
+        // Use raw MetaMask provider to avoid wagmi nonce issues
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ethereum = (window as any).ethereum;
+        if (!ethereum) {
+          setState({ status: "error", draft: "", txHash: null, error: "MetaMask not found" });
+          return;
+        }
+
+        // Get fresh nonce from the chain
+        const nonce = await publicClient!.getTransactionCount({
+          address,
+          blockTag: "pending",
+        });
+
+        // Send via MetaMask directly (bypasses wagmi nonce management)
+        const hash = await ethereum.request({
+          method: "eth_sendTransaction",
+          params: [
+            {
+              from: address,
+              to: RITUAL_DRAFT_CONTRACT,
+              data: data,
+              value: "0x" + parseEther("0.01").toString(16), // 0.01 RITUAL for auto-deposit
+              gas: "0x4C4B40", // 5,000,000
+              nonce: "0x" + nonce.toString(16),
+            },
+          ],
         });
 
         setState({ status: "pending", draft: "", txHash: hash, error: null });
 
         const receipt = await publicClient!.waitForTransactionReceipt({ hash });
 
-        // Check if tx reverted
         if (receipt.status === "reverted") {
           setState({
             status: "error",
             draft: "",
             txHash: hash,
-            error: `Transaction reverted. Check explorer: https://explorer.ritualfoundation.org/tx/${hash}`,
+            error: `Transaction reverted. Check: https://explorer.ritualfoundation.org/tx/${hash}`,
           });
           return;
         }
@@ -77,17 +97,21 @@ export function useGenerateDraft() {
         // Extract result from DraftGenerated event
         let content = "";
         for (const log of receipt.logs) {
-          try {
-            const decoded = decodeEventLog({
-              abi: RITUAL_DRAFT_ABI,
-              data: log.data,
-              topics: log.topics as any,
-            });
-            if (decoded.eventName === "DraftGenerated") {
-              content = (decoded.args as any).content || "";
-              break;
-            }
-          } catch {}
+          if (log.data && log.data !== "0x") {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const decoded = decodeEventLog({
+                abi: RITUAL_DRAFT_ABI,
+                data: log.data,
+                topics: (log as any).topics,
+              });
+              if (decoded.eventName === "DraftGenerated") {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                content = (decoded.args as any).content || "";
+                break;
+              }
+            } catch {}
+          }
         }
 
         if (content) {
@@ -116,7 +140,7 @@ export function useGenerateDraft() {
                 status: "error",
                 draft: "",
                 txHash: hash,
-                error: `No content generated. TX: ${hash}. Check explorer for details.`,
+                error: `No content. TX: ${hash}. Check explorer.`,
               });
             }
           } catch {
@@ -128,13 +152,12 @@ export function useGenerateDraft() {
             });
           }
         }
-      } catch (err: any) {
-        // Show ACTUAL error, not custom message
-        const errorMsg = err.message || "Transaction failed";
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : "Transaction failed";
         setState({ status: "error", draft: "", txHash: null, error: errorMsg });
       }
     },
-    [address, sendTransactionAsync, publicClient]
+    [address, publicClient]
   );
 
   const reset = useCallback(() => {
