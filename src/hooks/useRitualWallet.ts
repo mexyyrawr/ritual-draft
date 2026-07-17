@@ -1,16 +1,17 @@
 import {
   useAccount,
   useReadContract,
-  useSendTransaction,
+  useWalletClient,
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { parseEther, formatEther, encodeFunctionData } from "viem";
 import { RITUAL_ADDRESSES, RITUAL_WALLET_ABI } from "@/lib/ritual";
+import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
 import { useState, useCallback } from "react";
 
 export function useRitualWallet() {
   const { address } = useAccount();
-  const { sendTransactionAsync } = useSendTransaction();
+  const { data: walletClient } = useWalletClient();
   const [pendingHash, setPendingHash] = useState<`0x${string}` | undefined>();
 
   const { isLoading: isConfirming } = useWaitForTransactionReceipt({
@@ -32,13 +33,16 @@ export function useRitualWallet() {
 
   const deposit = useCallback(
     async (amount: string = "0.5") => {
+      if (!walletClient) throw new Error("Wallet not connected");
+
+      // Deposit to contract's RitualWallet via depositForFees()
       const data = encodeFunctionData({
-        abi: RITUAL_WALLET_ABI,
-        functionName: "deposit",
-        args: [100_000n], // lock for 100k blocks (~9.7 hours)
+        abi: RITUAL_DRAFT_ABI,
+        functionName: "depositForFees",
       });
-      const hash = await sendTransactionAsync({
-        to: RITUAL_ADDRESSES.SYSTEM.WALLET,
+
+      const hash = await walletClient.sendTransaction({
+        to: RITUAL_DRAFT_CONTRACT,
         data,
         value: parseEther(amount),
         gas: 100_000n,
@@ -46,7 +50,7 @@ export function useRitualWallet() {
       setPendingHash(hash);
       return hash;
     },
-    [sendTransactionAsync]
+    [walletClient]
   );
 
   return {

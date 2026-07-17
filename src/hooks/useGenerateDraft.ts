@@ -1,6 +1,8 @@
 import { useState, useCallback } from "react";
-import { useAccount, useSendTransaction, usePublicClient } from "wagmi";
-import { encodeLLMRequest, decodeLLMResult, LLM_PRECOMPILE } from "@/lib/llm";
+import { useAccount, usePublicClient, useWalletClient } from "wagmi";
+import { encodeFunctionData, decodeEventLog } from "viem";
+import { encodeLLMRequest } from "@/lib/llm";
+import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
 
 interface GenerateState {
   status: "idle" | "submitting" | "pending" | "success" | "error";
@@ -11,7 +13,7 @@ interface GenerateState {
 
 export function useGenerateDraft() {
   const { address } = useAccount();
-  const { sendTransactionAsync } = useSendTransaction();
+  const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
   const [state, setState] = useState<GenerateState>({
     status: "idle",
@@ -22,7 +24,7 @@ export function useGenerateDraft() {
 
   const generate = useCallback(
     async (prompt: string) => {
-      if (!address) {
+      if (!address || !walletClient) {
         setState({
           status: "error",
           draft: "",
@@ -40,13 +42,13 @@ export function useGenerateDraft() {
       });
 
       try {
-        // Encode full 30-field LLM request
-        const data = encodeLLMRequest({
+        // Step 1: Encode 30-field LLM request with viem (correct tuple encoding)
+        const llmInput = encodeLLMRequest({
           messages: [
             {
               role: "system",
               content:
-                "You are a social media content creator for Ritual Chain (Chain ID 1979), an AI-focused blockchain. Generate draft X/Twitter posts based on the user's request. Be engaging, casual, and shareable. Do not use excessive hashtags (max 1-2). Do not sound like AI.",
+                "You are a social media content creator for Ritual Chain (Chain ID 1979). Generate draft X/Twitter posts. Be engaging, casual, shareable. Max 1-2 hashtags. Do not sound like AI.",
             },
             { role: "user", content: prompt },
           ],
@@ -55,10 +57,17 @@ export function useGenerateDraft() {
           ttl: 300n,
         });
 
-        const hash = await sendTransactionAsync({
-          to: LLM_PRECOMPILE,
+        // Step 2: Call contract.generateDraft(llmInput)
+        const data = encodeFunctionData({
+          abi: RITUAL_DRAFT_ABI,
+          functionName: "generateDraft",
+          args: [llmInput],
+        });
+
+        const hash = await walletClient.sendTransaction({
+          to: RITUAL_DRAFT_CONTRACT,
           data,
-          gas: 3_000_000n,
+          gas: 5_000_000n,
         });
 
         setState({
@@ -68,92 +77,59 @@ export function useGenerateDraft() {
           error: null,
         });
 
-        // Wait for receipt (short-running async → result in spcCalls)
+        // Step 3: Wait for receipt
         const receipt = await publicClient!.waitForTransactionReceipt({
           hash,
         });
 
-        // Try to extract result from spcCalls
-        const spcCalls = (receipt as any).spcCalls;
-        if (spcCalls && spcCalls.length > 0) {
-          const output = spcCalls[0].output;
+        // Step 4: Extract result from DraftGenerated event
+        let content = "";
+        for (const log of receipt.logs) {
           try {
-            const result = decodeLLMResult(output);
-            if (result.hasError) {
-              setState({
-                status: "error",
-                draft: "",
-                txHash: hash,
-                error: `LLM error: ${result.errorMessage}`,
-              });
-            } else {
-              setState({
-                status: "success",
-                draft: result.content,
-                txHash: hash,
-                error: null,
-              });
-            }
-          } catch (decodeErr: any) {
-            setState({
-              status: "error",
-              draft: "",
-              txHash: hash,
-              error: `Failed to decode LLM response: ${decodeErr.message}`,
+            const decoded = decodeEventLog({
+              abi: RITUAL_DRAFT_ABI,
+              data: log.data,
+              topics: log.topics,
             });
+            if (decoded.eventName === "DraftGenerated") {
+              content = (decoded.args as any).content || "";
+              break;
+            }
+          } catch {
+            // Not our event, skip
           }
-        } else {
-          // Fallback: try PrecompileCalled event
-          const precompileLog = receipt.logs.find(
-            (log: any) =>
-              log.address?.toLowerCase() ===
-              "0x0000000000000000000000000000000000000802"
-          );
+        }
 
-          if (precompileLog && precompileLog.data && precompileLog.data !== "0x") {
-            try {
-              const result = decodeLLMResult(precompileLog.data);
-              if (result.hasError) {
-                setState({
-                  status: "error",
-                  draft: "",
-                  txHash: hash,
-                  error: `LLM error: ${result.errorMessage}`,
-                });
-              } else {
-                setState({
-                  status: "success",
-                  draft: result.content,
-                  txHash: hash,
-                  error: null,
-                });
-              }
-            } catch {
-              setState({
-                status: "error",
-                draft: "",
-                txHash: hash,
-                error: "Could not decode LLM result from event log",
-              });
-            }
-          } else {
-            setState({
-              status: "error",
-              draft: "",
-              txHash: hash,
-              error:
-                "No LLM result found in receipt. Check RitualWallet balance (need ~0.31 RIT).",
-            });
-          }
+        if (content) {
+          // Clean up reasoning blocks
+          const cleanContent = content
+            .replace(/<think>[\s\S]*?<\/think>/g, "")
+            .trim();
+          setState({
+            status: "success",
+            draft: cleanContent,
+            txHash: hash,
+            error: null,
+          });
+        } else {
+          setState({
+            status: "error",
+            draft: "",
+            txHash: hash,
+            error:
+              "No DraftGenerated event found. Check RitualWallet balance (contract needs ~0.31 RIT).",
+          });
         }
       } catch (err: any) {
         let errorMsg = err.message || "Generation failed";
         if (errorMsg.includes("sender locked")) {
           errorMsg =
-            "You have a pending transaction. Wait for it to settle, then try again.";
+            "Pending transaction. Wait for it to settle, then try again.";
         } else if (errorMsg.includes("insufficient")) {
           errorMsg =
-            "Insufficient RitualWallet balance. Deposit at least 0.5 RIT.";
+            "Insufficient RitualWallet balance. Owner needs to deposit RIT to the contract.";
+        } else if (errorMsg.includes("LLM error")) {
+          errorMsg = `LLM error: ${errorMsg.split("LLM error: ")[1] || "Unknown"}`;
         }
         setState({
           status: "error",
@@ -163,7 +139,7 @@ export function useGenerateDraft() {
         });
       }
     },
-    [address, sendTransactionAsync, publicClient]
+    [address, walletClient, publicClient]
   );
 
   const reset = useCallback(() => {

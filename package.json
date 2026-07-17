@@ -17,12 +17,16 @@
     "wagmi": "^3.7.2"
   },
   "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.15",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
+    "ethers": "^6.17.0",
+    "hardhat": "^3.10.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
