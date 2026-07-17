@@ -1,11 +1,11 @@
 import { useState, useCallback } from "react";
 import { useAccount, usePublicClient } from "wagmi";
-import { encodeFunctionData, decodeEventLog, parseEther } from "viem";
-import { encodeLLMRequest } from "@/lib/llm";
+import { encodeFunctionData, parseEther } from "viem";
+import { encodeLLMRequest, decodeLLMResult } from "@/lib/llm";
 import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
 
 interface GenerateState {
-  status: "idle" | "submitting" | "pending" | "success" | "error";
+  status: "idle" | "submitting" | "pending" | "polling" | "success" | "error";
   draft: string;
   txHash: `0x${string}` | null;
   error: string | null;
@@ -82,6 +82,7 @@ export function useGenerateDraft() {
 
         setState({ status: "pending", draft: "", txHash: hash, error: null });
 
+        // Wait for transaction receipt
         const receipt = await publicClient!.waitForTransactionReceipt({ hash });
 
         if (receipt.status === "reverted") {
@@ -94,76 +95,56 @@ export function useGenerateDraft() {
           return;
         }
 
-        // Extract result from DraftGenerated event
-        let content = "";
-        for (const log of receipt.logs) {
-          if (log.data && log.data !== "0x") {
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const decoded = decodeEventLog({
-                abi: RITUAL_DRAFT_ABI,
-                data: log.data,
-                topics: (log as any).topics,
-              });
-              if (decoded.eventName === "DraftGenerated") {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                content = (decoded.args as any).content || "";
-                break;
-              }
-            } catch {}
-          }
-        }
+        // Check spcCalls for async LLM result (Ritual-specific receipt field)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const spcCalls = (receipt as any).spcCalls;
 
-        if (content) {
-          const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-          setState({ status: "success", draft: cleanContent, txHash: hash, error: null });
-        } else {
-          // Fallback: read from contract
+        if (spcCalls && spcCalls.length > 0) {
+          const output = spcCalls[0].output;
+
           try {
-            const draftId = await publicClient!.readContract({
-              address: RITUAL_DRAFT_CONTRACT,
-              abi: RITUAL_DRAFT_ABI,
-              functionName: "nextDraftId",
-            });
-            const prevId = draftId - 1n;
-            const [, storedContent] = await publicClient!.readContract({
-              address: RITUAL_DRAFT_CONTRACT,
-              abi: RITUAL_DRAFT_ABI,
-              functionName: "getDraft",
-              args: [prevId],
-            });
-            if (storedContent && storedContent !== "No content") {
-              const cleanContent = storedContent.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-              setState({ status: "success", draft: cleanContent, txHash: hash, error: null });
-            } else {
+            const result = decodeLLMResult(output);
+
+            if (result.hasError) {
               setState({
                 status: "error",
                 draft: "",
                 txHash: hash,
-                error: `No content. TX: ${hash}. Check explorer.`,
+                error: `LLM error: ${result.errorMessage}`,
               });
+              return;
             }
-          } catch {
+
+            setState({
+              status: "success",
+              draft: result.content,
+              txHash: hash,
+              error: null,
+            });
+          } catch (decodeErr) {
+            console.error("Failed to decode spcCalls output:", decodeErr);
             setState({
               status: "error",
               draft: "",
               txHash: hash,
-              error: `Could not read result. TX: ${hash}`,
+              error: `Failed to decode LLM result. TX: ${hash}`,
             });
           }
+        } else {
+          // No spcCalls — LLM might still be processing, poll for result
+          setState({ status: "polling", draft: "", txHash: hash, error: null });
+          await pollForResult(hash);
         }
       } catch (err: unknown) {
         let errorMsg = "Transaction failed";
         if (err instanceof Error) {
           errorMsg = err.message;
-          // Extract RPC error details if present
           const msg = err.message;
           if (msg.includes("nonce")) errorMsg = "Nonce error: reset MetaMask account";
           else if (msg.includes("insufficient")) errorMsg = "Insufficient funds or lock expired";
           else if (msg.includes("user rejected")) errorMsg = "Transaction rejected by user";
           else if (msg.includes("Internal JSON-RPC")) errorMsg = `RPC error: ${msg.slice(0, 200)}`;
         } else if (typeof err === "object" && err !== null) {
-          // Try to extract from error object
           const e = err as any;
           if (e.message) errorMsg = e.message;
           else if (e.reason) errorMsg = e.reason;
@@ -175,6 +156,56 @@ export function useGenerateDraft() {
       }
     },
     [address, publicClient]
+  );
+
+  const pollForResult = useCallback(
+    async (hash: `0x${string}`) => {
+      const maxAttempts = 30; // 30 attempts × 2s = 60s max
+      const delay = 2000;
+
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise((r) => setTimeout(r, delay));
+
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const receipt = await publicClient!.getTransactionReceipt({ hash }) as any;
+
+          if (receipt && receipt.spcCalls && receipt.spcCalls.length > 0) {
+            const output = receipt.spcCalls[0].output;
+            const result = decodeLLMResult(output);
+
+            if (result.hasError) {
+              setState({
+                status: "error",
+                draft: "",
+                txHash: hash,
+                error: `LLM error: ${result.errorMessage}`,
+              });
+              return;
+            }
+
+            setState({
+              status: "success",
+              draft: result.content,
+              txHash: hash,
+              error: null,
+            });
+            return;
+          }
+        } catch {
+          // Receipt not ready yet, continue polling
+        }
+      }
+
+      // Timeout
+      setState({
+        status: "error",
+        draft: "",
+        txHash: hash,
+        error: `Timeout waiting for LLM result. TX: ${hash}`,
+      });
+    },
+    [publicClient]
   );
 
   const reset = useCallback(() => {

@@ -80,12 +80,15 @@ export function useRitualDraft() {
   // Sync LLM state to draft state
   const draft = llmDraft || state.draft;
   const error = llmError || state.error;
+  // Map LLM statuses to UI statuses
   const status =
     llmStatus === "success"
       ? "success"
       : llmStatus === "error"
         ? "error"
-        : state.status;
+        : llmStatus === "submitting" || llmStatus === "pending" || llmStatus === "polling"
+          ? "generating"
+          : state.status;
 
   const reset = useCallback(() => {
     setState({
