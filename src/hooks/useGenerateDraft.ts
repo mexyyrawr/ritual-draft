@@ -153,7 +153,24 @@ export function useGenerateDraft() {
           }
         }
       } catch (err: unknown) {
-        const errorMsg = err instanceof Error ? err.message : "Transaction failed";
+        let errorMsg = "Transaction failed";
+        if (err instanceof Error) {
+          errorMsg = err.message;
+          // Extract RPC error details if present
+          const msg = err.message;
+          if (msg.includes("nonce")) errorMsg = "Nonce error: reset MetaMask account";
+          else if (msg.includes("insufficient")) errorMsg = "Insufficient funds or lock expired";
+          else if (msg.includes("user rejected")) errorMsg = "Transaction rejected by user";
+          else if (msg.includes("Internal JSON-RPC")) errorMsg = `RPC error: ${msg.slice(0, 200)}`;
+        } else if (typeof err === "object" && err !== null) {
+          // Try to extract from error object
+          const e = err as any;
+          if (e.message) errorMsg = e.message;
+          else if (e.reason) errorMsg = e.reason;
+          else if (e.data?.message) errorMsg = e.data.message;
+          else errorMsg = JSON.stringify(err).slice(0, 300);
+        }
+        console.error("Generate error:", err);
         setState({ status: "error", draft: "", txHash: null, error: errorMsg });
       }
     },
