@@ -42,7 +42,13 @@ export function useGenerateDraft() {
       });
 
       try {
-        // Step 1: Encode 30-field LLM request with viem (correct tuple encoding)
+        // Fetch latest nonce to avoid stale nonce issues
+        const nonce = await publicClient!.getTransactionCount({
+          address,
+          blockTag: "pending",
+        });
+
+        // Encode 30-field LLM request
         const llmInput = encodeLLMRequest({
           messages: [
             {
@@ -57,7 +63,7 @@ export function useGenerateDraft() {
           ttl: 300n,
         });
 
-        // Step 2: Call contract.generateDraft(llmInput)
+        // Call contract.generateDraft(llmInput)
         const data = encodeFunctionData({
           abi: RITUAL_DRAFT_ABI,
           functionName: "generateDraft",
@@ -68,6 +74,7 @@ export function useGenerateDraft() {
           to: RITUAL_DRAFT_CONTRACT,
           data,
           gas: 5_000_000n,
+          nonce,
         });
 
         setState({
@@ -77,12 +84,12 @@ export function useGenerateDraft() {
           error: null,
         });
 
-        // Step 3: Wait for receipt
+        // Wait for receipt
         const receipt = await publicClient!.waitForTransactionReceipt({
           hash,
         });
 
-        // Step 4: Extract result from DraftGenerated event
+        // Extract result from DraftGenerated event
         let content = "";
         for (const log of receipt.logs) {
           try {
@@ -101,7 +108,6 @@ export function useGenerateDraft() {
         }
 
         if (content) {
-          // Clean up reasoning blocks
           const cleanContent = content
             .replace(/<think>[\s\S]*?<\/think>/g, "")
             .trim();
@@ -112,13 +118,46 @@ export function useGenerateDraft() {
             error: null,
           });
         } else {
-          setState({
-            status: "error",
-            draft: "",
-            txHash: hash,
-            error:
-              "No DraftGenerated event found. Check RitualWallet balance (contract needs ~0.31 RIT).",
-          });
+          // Try reading draft from contract
+          try {
+            const draftId = await publicClient!.readContract({
+              address: RITUAL_DRAFT_CONTRACT,
+              abi: RITUAL_DRAFT_ABI,
+              functionName: "nextDraftId",
+            });
+            const prevId = draftId - 1n;
+            const [, storedContent] = await publicClient!.readContract({
+              address: RITUAL_DRAFT_CONTRACT,
+              abi: RITUAL_DRAFT_ABI,
+              functionName: "getDraft",
+              args: [prevId],
+            });
+            if (storedContent && storedContent !== "No content") {
+              const cleanContent = storedContent
+                .replace(/<think>[\s\S]*?<\/think>/g, "")
+                .trim();
+              setState({
+                status: "success",
+                draft: cleanContent,
+                txHash: hash,
+                error: null,
+              });
+            } else {
+              setState({
+                status: "error",
+                draft: "",
+                txHash: hash,
+                error: "Draft generated but content empty. Check contract RITUAL balance.",
+              });
+            }
+          } catch {
+            setState({
+              status: "error",
+              draft: "",
+              txHash: hash,
+              error: "Could not read draft from contract.",
+            });
+          }
         }
       } catch (err: any) {
         let errorMsg = err.message || "Generation failed";
@@ -126,10 +165,12 @@ export function useGenerateDraft() {
           errorMsg =
             "Pending transaction. Wait for it to settle, then try again.";
         } else if (errorMsg.includes("insufficient")) {
-          errorMsg =
-            "Insufficient RitualWallet balance. Owner needs to deposit RIT to the contract.";
+          errorMsg = "Insufficient contract balance. Contact owner.";
         } else if (errorMsg.includes("LLM error")) {
           errorMsg = `LLM error: ${errorMsg.split("LLM error: ")[1] || "Unknown"}`;
+        } else if (errorMsg.includes("nonce")) {
+          errorMsg =
+            "Nonce error. Reset MetaMask: Settings → Advanced → Clear activity tab data. Then refresh page.";
         }
         setState({
           status: "error",
