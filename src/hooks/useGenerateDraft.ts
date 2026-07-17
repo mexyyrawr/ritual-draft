@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from "wagmi";
-import { decodeEventLog } from "viem";
+import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
+import { encodeFunctionData, decodeEventLog } from "viem";
 import { encodeLLMRequest } from "@/lib/llm";
 import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
 
@@ -14,7 +14,7 @@ interface GenerateState {
 export function useGenerateDraft() {
   const { address } = useAccount();
   const publicClient = usePublicClient();
-  const { writeContractAsync } = useWriteContract();
+  const { sendTransactionAsync } = useSendTransaction();
   const [state, setState] = useState<GenerateState>({
     status: "idle",
     draft: "",
@@ -25,21 +25,11 @@ export function useGenerateDraft() {
   const generate = useCallback(
     async (prompt: string) => {
       if (!address) {
-        setState({
-          status: "error",
-          draft: "",
-          txHash: null,
-          error: "Connect wallet first",
-        });
+        setState({ status: "error", draft: "", txHash: null, error: "Connect wallet first" });
         return;
       }
 
-      setState({
-        status: "submitting",
-        draft: "",
-        txHash: null,
-        error: null,
-      });
+      setState({ status: "submitting", draft: "", txHash: null, error: null });
 
       try {
         // Encode 30-field LLM request with viem (correct tuple encoding)
@@ -57,26 +47,25 @@ export function useGenerateDraft() {
           ttl: 300n,
         });
 
-        // Use writeContractAsync (same as Ritual Wrapped)
-        const hash = await writeContractAsync({
-          address: RITUAL_DRAFT_CONTRACT,
+        // Encode contract function call
+        const data = encodeFunctionData({
           abi: RITUAL_DRAFT_ABI,
           functionName: "generateDraft",
           args: [llmInput],
+        });
+
+        // Use sendTransactionAsync (bypasses eth_call simulation)
+        // wagmi handles nonce management automatically
+        const hash = await sendTransactionAsync({
+          to: RITUAL_DRAFT_CONTRACT,
+          data,
           gas: 5_000_000n,
         });
 
-        setState({
-          status: "pending",
-          draft: "",
-          txHash: hash,
-          error: null,
-        });
+        setState({ status: "pending", draft: "", txHash: hash, error: null });
 
         // Wait for receipt
-        const receipt = await publicClient!.waitForTransactionReceipt({
-          hash,
-        });
+        const receipt = await publicClient!.waitForTransactionReceipt({ hash });
 
         // Extract result from DraftGenerated event
         let content = "";
@@ -85,7 +74,7 @@ export function useGenerateDraft() {
             const decoded = decodeEventLog({
               abi: RITUAL_DRAFT_ABI,
               data: log.data,
-              topics: log.topics,
+              topics: log.topics as any,
             });
             if (decoded.eventName === "DraftGenerated") {
               content = (decoded.args as any).content || "";
@@ -97,17 +86,10 @@ export function useGenerateDraft() {
         }
 
         if (content) {
-          const cleanContent = content
-            .replace(/<think>[\s\S]*?<\/think>/g, "")
-            .trim();
-          setState({
-            status: "success",
-            draft: cleanContent,
-            txHash: hash,
-            error: null,
-          });
+          const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+          setState({ status: "success", draft: cleanContent, txHash: hash, error: null });
         } else {
-          // Try reading draft from contract
+          // Fallback: read draft from contract
           try {
             const draftId = await publicClient!.readContract({
               address: RITUAL_DRAFT_CONTRACT,
@@ -122,54 +104,28 @@ export function useGenerateDraft() {
               args: [prevId],
             });
             if (storedContent && storedContent !== "No content") {
-              const cleanContent = storedContent
-                .replace(/<think>[\s\S]*?<\/think>/g, "")
-                .trim();
-              setState({
-                status: "success",
-                draft: cleanContent,
-                txHash: hash,
-                error: null,
-              });
+              const cleanContent = storedContent.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+              setState({ status: "success", draft: cleanContent, txHash: hash, error: null });
             } else {
-              setState({
-                status: "error",
-                draft: "",
-                txHash: hash,
-                error: "Draft generated but content empty. Contract may need more RITUAL.",
-              });
+              setState({ status: "error", draft: "", txHash: hash, error: "Draft generated but content empty. Contract may need more RITUAL." });
             }
           } catch {
-            setState({
-              status: "error",
-              draft: "",
-              txHash: hash,
-              error: "Could not read draft from contract.",
-            });
+            setState({ status: "error", draft: "", txHash: hash, error: "Could not read draft from contract." });
           }
         }
       } catch (err: any) {
         let errorMsg = err.message || "Generation failed";
         if (errorMsg.includes("sender locked")) {
-          errorMsg =
-            "Pending transaction. Wait for it to settle, then try again.";
-        } else if (errorMsg.includes("insufficient")) {
-          errorMsg = "Insufficient contract balance. Contact owner.";
-        } else if (errorMsg.includes("LLM error")) {
-          errorMsg = `LLM error: ${errorMsg.split("LLM error: ")[1] || "Unknown"}`;
+          errorMsg = "Pending transaction. Wait for it to settle, then try again.";
+        } else if (errorMsg.includes("insufficient") || errorMsg.includes("balance")) {
+          errorMsg = "Insufficient contract RITUAL balance. Contact owner to top up.";
         } else if (errorMsg.includes("nonce")) {
-          errorMsg =
-            "Nonce error. In MetaMask: Settings → Advanced → Clear activity tab data. Then refresh.";
+          errorMsg = "Nonce error. In MetaMask: Settings → Advanced → Clear activity tab data. Then refresh.";
         }
-        setState({
-          status: "error",
-          draft: "",
-          txHash: null,
-          error: errorMsg,
-        });
+        setState({ status: "error", draft: "", txHash: null, error: errorMsg });
       }
     },
-    [address, writeContractAsync, publicClient]
+    [address, sendTransactionAsync, publicClient]
   );
 
   const reset = useCallback(() => {
