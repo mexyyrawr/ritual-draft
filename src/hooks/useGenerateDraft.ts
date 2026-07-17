@@ -32,7 +32,6 @@ export function useGenerateDraft() {
       setState({ status: "submitting", draft: "", txHash: null, error: null });
 
       try {
-        // Encode 30-field LLM request with viem (correct tuple encoding)
         const llmInput = encodeLLMRequest({
           messages: [
             {
@@ -47,15 +46,12 @@ export function useGenerateDraft() {
           ttl: 300n,
         });
 
-        // Encode contract function call
         const data = encodeFunctionData({
           abi: RITUAL_DRAFT_ABI,
           functionName: "generateDraft",
           args: [llmInput],
         });
 
-        // Use sendTransactionAsync (bypasses eth_call simulation)
-        // wagmi handles nonce management automatically
         const hash = await sendTransactionAsync({
           to: RITUAL_DRAFT_CONTRACT,
           data,
@@ -64,8 +60,18 @@ export function useGenerateDraft() {
 
         setState({ status: "pending", draft: "", txHash: hash, error: null });
 
-        // Wait for receipt
         const receipt = await publicClient!.waitForTransactionReceipt({ hash });
+
+        // Check if tx reverted
+        if (receipt.status === "reverted") {
+          setState({
+            status: "error",
+            draft: "",
+            txHash: hash,
+            error: `Transaction reverted. Check explorer: https://explorer.ritualfoundation.org/tx/${hash}`,
+          });
+          return;
+        }
 
         // Extract result from DraftGenerated event
         let content = "";
@@ -80,16 +86,14 @@ export function useGenerateDraft() {
               content = (decoded.args as any).content || "";
               break;
             }
-          } catch {
-            // Not our event, skip
-          }
+          } catch {}
         }
 
         if (content) {
           const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
           setState({ status: "success", draft: cleanContent, txHash: hash, error: null });
         } else {
-          // Fallback: read draft from contract
+          // Fallback: read from contract
           try {
             const draftId = await publicClient!.readContract({
               address: RITUAL_DRAFT_CONTRACT,
@@ -107,21 +111,25 @@ export function useGenerateDraft() {
               const cleanContent = storedContent.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
               setState({ status: "success", draft: cleanContent, txHash: hash, error: null });
             } else {
-              setState({ status: "error", draft: "", txHash: hash, error: "Draft generated but content empty. Contract may need more RITUAL." });
+              setState({
+                status: "error",
+                draft: "",
+                txHash: hash,
+                error: `No content generated. TX: ${hash}. Check explorer for details.`,
+              });
             }
           } catch {
-            setState({ status: "error", draft: "", txHash: hash, error: "Could not read draft from contract." });
+            setState({
+              status: "error",
+              draft: "",
+              txHash: hash,
+              error: `Could not read result. TX: ${hash}`,
+            });
           }
         }
       } catch (err: any) {
-        let errorMsg = err.message || "Generation failed";
-        if (errorMsg.includes("sender locked")) {
-          errorMsg = "Pending transaction. Wait for it to settle, then try again.";
-        } else if (errorMsg.includes("insufficient") || errorMsg.includes("balance")) {
-          errorMsg = "Insufficient contract RITUAL balance. Contact owner to top up.";
-        } else if (errorMsg.includes("nonce")) {
-          errorMsg = "Nonce error. In MetaMask: Settings → Advanced → Clear activity tab data. Then refresh.";
-        }
+        // Show ACTUAL error, not custom message
+        const errorMsg = err.message || "Transaction failed";
         setState({ status: "error", draft: "", txHash: null, error: errorMsg });
       }
     },
