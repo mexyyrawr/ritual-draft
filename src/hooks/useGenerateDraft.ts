@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
-import { useAccount, usePublicClient, useWalletClient } from "wagmi";
-import { encodeFunctionData, decodeEventLog } from "viem";
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from "wagmi";
+import { decodeEventLog } from "viem";
 import { encodeLLMRequest } from "@/lib/llm";
 import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
 
@@ -13,8 +13,8 @@ interface GenerateState {
 
 export function useGenerateDraft() {
   const { address } = useAccount();
-  const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
+  const { writeContractAsync } = useWriteContract();
   const [state, setState] = useState<GenerateState>({
     status: "idle",
     draft: "",
@@ -24,7 +24,7 @@ export function useGenerateDraft() {
 
   const generate = useCallback(
     async (prompt: string) => {
-      if (!address || !walletClient) {
+      if (!address) {
         setState({
           status: "error",
           draft: "",
@@ -42,13 +42,7 @@ export function useGenerateDraft() {
       });
 
       try {
-        // Fetch latest nonce to avoid stale nonce issues
-        const nonce = await publicClient!.getTransactionCount({
-          address,
-          blockTag: "pending",
-        });
-
-        // Encode 30-field LLM request
+        // Encode 30-field LLM request with viem (correct tuple encoding)
         const llmInput = encodeLLMRequest({
           messages: [
             {
@@ -63,18 +57,13 @@ export function useGenerateDraft() {
           ttl: 300n,
         });
 
-        // Call contract.generateDraft(llmInput)
-        const data = encodeFunctionData({
+        // Use writeContractAsync (same as Ritual Wrapped)
+        const hash = await writeContractAsync({
+          address: RITUAL_DRAFT_CONTRACT,
           abi: RITUAL_DRAFT_ABI,
           functionName: "generateDraft",
           args: [llmInput],
-        });
-
-        const hash = await walletClient.sendTransaction({
-          to: RITUAL_DRAFT_CONTRACT,
-          data,
           gas: 5_000_000n,
-          nonce,
         });
 
         setState({
@@ -147,7 +136,7 @@ export function useGenerateDraft() {
                 status: "error",
                 draft: "",
                 txHash: hash,
-                error: "Draft generated but content empty. Check contract RITUAL balance.",
+                error: "Draft generated but content empty. Contract may need more RITUAL.",
               });
             }
           } catch {
@@ -170,7 +159,7 @@ export function useGenerateDraft() {
           errorMsg = `LLM error: ${errorMsg.split("LLM error: ")[1] || "Unknown"}`;
         } else if (errorMsg.includes("nonce")) {
           errorMsg =
-            "Nonce error. Reset MetaMask: Settings → Advanced → Clear activity tab data. Then refresh page.";
+            "Nonce error. In MetaMask: Settings → Advanced → Clear activity tab data. Then refresh.";
         }
         setState({
           status: "error",
@@ -180,7 +169,7 @@ export function useGenerateDraft() {
         });
       }
     },
-    [address, walletClient, publicClient]
+    [address, writeContractAsync, publicClient]
   );
 
   const reset = useCallback(() => {

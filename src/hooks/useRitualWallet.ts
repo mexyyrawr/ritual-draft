@@ -1,23 +1,13 @@
-import {
-  useAccount,
-  useReadContract,
-  useWalletClient,
-  useWaitForTransactionReceipt,
-} from "wagmi";
-import { parseEther, formatEther, encodeFunctionData } from "viem";
+import { useAccount, useReadContract, useWriteContract } from "wagmi";
+import { parseEther, formatEther } from "viem";
 import { RITUAL_ADDRESSES, RITUAL_WALLET_ABI } from "@/lib/ritual";
-import { RITUAL_DRAFT_CONTRACT, RITUAL_DRAFT_ABI } from "@/lib/contract";
+import { RITUAL_DRAFT_CONTRACT } from "@/lib/contract";
 import { useState, useCallback } from "react";
 
 export function useRitualWallet() {
   const { address } = useAccount();
-  const { data: walletClient } = useWalletClient();
-  const [pendingHash, setPendingHash] = useState<`0x${string}` | undefined>();
-
-  const { isLoading: isConfirming } = useWaitForTransactionReceipt({
-    hash: pendingHash,
-    query: { enabled: !!pendingHash },
-  });
+  const { writeContractAsync } = useWriteContract();
+  const [isDepositing, setIsDepositing] = useState(false);
 
   const {
     data: balance,
@@ -33,31 +23,35 @@ export function useRitualWallet() {
 
   const deposit = useCallback(
     async (amount: string = "0.5") => {
-      if (!walletClient) throw new Error("Wallet not connected");
-
-      // Deposit to contract's RitualWallet via depositForFees()
-      const data = encodeFunctionData({
-        abi: RITUAL_DRAFT_ABI,
-        functionName: "depositForFees",
-      });
-
-      const hash = await walletClient.sendTransaction({
-        to: RITUAL_DRAFT_CONTRACT,
-        data,
-        value: parseEther(amount),
-        gas: 100_000n,
-      });
-      setPendingHash(hash);
-      return hash;
+      setIsDepositing(true);
+      try {
+        const hash = await writeContractAsync({
+          address: RITUAL_DRAFT_CONTRACT,
+          abi: [
+            {
+              type: "function",
+              name: "depositForFees",
+              inputs: [],
+              outputs: [],
+              stateMutability: "payable",
+            },
+          ] as const,
+          functionName: "depositForFees",
+          value: parseEther(amount),
+        });
+        return hash;
+      } finally {
+        setIsDepositing(false);
+      }
     },
-    [walletClient]
+    [writeContractAsync]
   );
 
   return {
     balance,
     balanceFormatted: balance ? formatEther(balance) : "0",
     deposit,
-    isDepositing: isConfirming,
+    isDepositing,
     isBalanceLoading,
     refetchBalance,
   };
