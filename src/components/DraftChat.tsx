@@ -39,11 +39,11 @@ export function DraftChat() {
   const [style, setStyle] = useState<DraftOptions["style"]>("single");
   const [lang, setLang] = useState<Lang>("en");
 
-  const isLoading = status === "researching" || status === "generating";
+  const isLoading = status !== "idle" && status !== "success" && status !== "error";
   const examples = lang === "en" ? EXAMPLE_QUERIES_EN : EXAMPLE_QUERIES_ID;
 
   const handleGenerate = () => {
-    if (!query.trim()) return;
+    if (!query.trim() || isLoading) return;
     createDraft(query, { style, language: lang });
   };
 

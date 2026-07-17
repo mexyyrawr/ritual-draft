@@ -143,6 +143,7 @@ export function useGenerateDraft() {
           if (msg.includes("nonce")) errorMsg = "Nonce error: reset MetaMask account";
           else if (msg.includes("insufficient")) errorMsg = "Insufficient funds or lock expired";
           else if (msg.includes("user rejected")) errorMsg = "Transaction rejected by user";
+          else if (msg.includes("already known")) errorMsg = "Tx already pending — wait or reset MetaMask account";
           else if (msg.includes("Internal JSON-RPC")) errorMsg = `RPC error: ${msg.slice(0, 200)}`;
         } else if (typeof err === "object" && err !== null) {
           const e = err as any;
